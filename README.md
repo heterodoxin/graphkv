@@ -25,7 +25,7 @@ Measured on an NVIDIA GeForce RTX 4070 Ti SUPER with PyTorch CUDA.
 | Qwen2.5-7B NF4, 1k-token cache, next-token decode | `graphkv-qwen7-nf4` | `43,352,064 / 58,720,256` | `1.35x` | cosine `0.827394`, top10 `0.80`, argmax match |
 | Qwen2.5-7B NF4, 4k-token cache, next-token decode | `graphkv-qwen7-nf4` | `95,993,856 / 234,881,024` | `2.45x` | cosine `0.830570`, top10 `0.70`, argmax match |
 | Qwen2.5-7B NF4, 16k-token cache, next-token decode | `graphkv-qwen7-nf4` | `292,454,400 / 939,524,096` | `3.21x` | cosine `0.998599`, top10 `1.00`, argmax match |
-| Qwen2.5-7B NF4, 16k-token GraphKV default retest | `graphkv` | `260,356,096 / 939,524,096` | `3.61x` | cosine `0.999641`, top10 `1.00`, argmax match |
+| Qwen2.5-7B NF4, 16k-token Mneme semantic-tail retest | `graphkv` | `255,437,952 / 939,524,096` | `3.68x` | cosine `0.999018`, top10 `0.90`, argmax match |
 | Qwen2.5-7B NF4, 32k-token cache, next-token decode | `graphkv-qwen7-nf4` | `558,530,560 / 1,879,048,192` | `3.36x` | cosine `0.990316`, top10 `1.00`, argmax match |
 
 The Qwen2.5-7B runs use real chunked prefill, then compare a one-token decode
@@ -84,21 +84,28 @@ into cheaper low-bit storage.
 After adding the built-in Mneme retention API, GraphKV was retested locally on
 `Qwen/Qwen2.5-7B` NF4 with a 16k-token code-shaped prompt. The target code span
 was placed in the middle of the cache, outside the prompt sink and recent tail.
-The default `graphkv` profile keeps a 128-token sink, a 256-token tail, protects
-1% of Mneme-ranked candidate tokens, and sends the lowest-priority 25% of
-compressed tokens to 2-bit value storage at 8k+ context lengths.
+The default `graphkv` profile keeps a 128-token sink and a 256-token tail when
+no graph signal is supplied. When Mneme or explicit importance scores are
+available at 8k+ context lengths, it trusts that graph signal more: the recent
+tail drops to 128 tokens, 1% of Mneme-ranked candidate tokens stay full
+precision, and the lowest-priority 25% of compressed tokens move to 2-bit value
+storage.
 
 | Setup | Cache length | Cache bytes | Compression | Fidelity |
 | --- | ---: | ---: | ---: | --- |
 | GraphKV plain `graphkv-qwen7-nf4` | 16k | `292,454,400 / 939,524,096` | `3.21x` | cosine `0.979474`, top10 `0.80`, argmax match |
-| GraphKV default with built-in Mneme | 16k | `260,356,096 / 939,524,096` | `3.61x` | cosine `0.999641`, top10 `1.00`, argmax match |
+| Previous GraphKV Mneme tier, 256-token tail | 16k | `260,356,096 / 939,524,096` | `3.61x` | cosine `0.997761`, top10 `0.90`, argmax match |
+| GraphKV default with Mneme semantic tail | 16k | `255,437,952 / 939,524,096` | `3.68x` | cosine `0.999018`, top10 `0.90`, argmax match |
+| GraphKV 30% cold tier sweep, not default | 16k | `252,090,496 / 939,524,096` | `3.73x` | cosine `0.997708`, top10 `0.90`, argmax match |
 
 The same sweep rejected an aggressive 6% plus 128-token minimum graph-retention
 policy at 16k because it over-retained, dropped cosine to `0.906118`, and
 changed argmax. The default `graphkv` profile uses the calibrated 1%
 long-context graph policy when graph memory or importance scores are supplied.
 It also uses Mneme to identify the least relevant compressed tokens for the
-2-bit value tier; pushing that tier to 35% or higher reduced top10 quality.
+2-bit value tier. A 30% cold-tier sweep reached `3.73x`, but the default stays
+at 25% for the stronger fidelity margin; pushing that tier to 35% or higher
+reduced top10 quality.
 
 ## Qwen 7B NF4 Comparison
 
@@ -117,7 +124,7 @@ KV storage, matching the cache-storage accounting used for GraphKV.
 | GraphKV `graphkv-qwen7-nf4` | 4k | `95,993,856 / 234,881,024` | `2.45x` | cosine `0.830570`, top10 `0.70`, argmax match |
 | TurboQuant K4/V4 | 4k | `62,390,272 / 234,881,024` | `3.76x` | cosine `-0.209976`, top10 `0.20`, argmax changed |
 | TurboQuant K4/V3 | 4k | `91,750,400 / 234,881,024` | `2.56x` | cosine `-0.192223`, top10 `0.20`, argmax changed |
-| GraphKV `graphkv` | 16k | `260,356,096 / 939,524,096` | `3.61x` | cosine `0.999641`, top10 `1.00`, argmax match |
+| GraphKV `graphkv` | 16k | `255,437,952 / 939,524,096` | `3.68x` | cosine `0.999018`, top10 `0.90`, argmax match |
 | GraphKV `graphkv-qwen7-nf4` | 16k | `292,454,400 / 939,524,096` | `3.21x` | cosine `0.998599`, top10 `1.00`, argmax match |
 | TurboQuant K4/V4 | 16k | `249,561,088 / 939,524,096` | `3.76x` | cosine `0.657976`, top10 `0.10`, argmax changed |
 | TurboQuant K4/V3 | 16k | `367,001,600 / 939,524,096` | `2.56x` | cosine `0.649364`, top10 `0.10`, argmax changed |
@@ -169,8 +176,9 @@ print(cache.compression_ratio())
 GraphKV tensor profiles:
 
 - `graphkv`: default profile with Mneme built in, tuned for long-context
-  fidelity with a 128-token sink, 256-token tail, 64-token quant groups, and
-  calibrated graph retention above 8k tokens when graph memory is supplied.
+  fidelity with a 128-token sink, 256-token normal tail, 128-token Mneme
+  semantic tail, 64-token quant groups, and calibrated graph retention above 8k
+  tokens when graph memory is supplied.
   Mneme also routes the lowest-priority 25% of compressed long-context tokens
   into 2-bit value storage for extra compression.
 - `graphkv-int2-max`: aggressive 2-bit affine packing.

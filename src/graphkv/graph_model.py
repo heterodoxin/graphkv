@@ -216,10 +216,7 @@ def load_bundled_graph_model(device: str | torch.device = "auto") -> GraphMemory
     from safetensors.torch import load_file
 
     model_dir = bundled_graph_model_dir()
-    if device == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        device = torch.device(device)
+    device = _resolve_graph_device(device)
     cfg = GraphMemoryConfig.from_mapping(json.loads((model_dir / "latest.json").read_text()))
     model = GraphMemory17L(cfg).to(device)
     model.load_state_dict(load_file(model_dir / "latest.safetensors", device=str(device)))
@@ -239,9 +236,9 @@ def graph_mneme_chunk_scores(
 
     if model is None:
         model = load_bundled_graph_model(device=device or "auto")
-    elif device is not None:
-        model = model.to(torch.device(device))
-    scores = model.score(query, candidates, device=device)
+    resolved_device = _resolve_graph_device(device) if device is not None else next(model.parameters()).device
+    model = model.to(resolved_device)
+    scores = model.score(query, candidates, device=resolved_device)
     return normalize_graph_scores(scores, mode=normalize)
 
 
@@ -285,6 +282,8 @@ def build_graph_mneme_token_scores(
 
     if model is None:
         model = load_bundled_graph_model(device=device or "auto")
+    if device is not None:
+        device = _resolve_graph_device(device)
     cfg = model.cfg
     query = build_query_bank(
         query_anchor,
@@ -427,3 +426,9 @@ def _local_slot(mapping: dict[int, int], key: int, limit: int) -> int:
     if key not in mapping:
         mapping[key] = min(len(mapping), limit - 1)
     return mapping[key]
+
+
+def _resolve_graph_device(device: str | torch.device) -> torch.device:
+    if str(device) == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(device)

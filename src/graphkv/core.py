@@ -38,6 +38,8 @@ class KvQuantConfig:
     semantic_protection_ratio: float = 0.0
     min_protected_tokens: int = 0
     semantic_protection_min_context: int = 0
+    semantic_residual_length: int | None = None
+    semantic_residual_min_context: int = 0
     low_priority_ratio: float = 0.0
     min_low_priority_tokens: int = 0
     low_priority_min_context: int = 0
@@ -82,6 +84,10 @@ class KvQuantConfig:
             raise ValueError("min_protected_tokens must be >= 0.")
         if self.semantic_protection_min_context < 0:
             raise ValueError("semantic_protection_min_context must be >= 0.")
+        if self.semantic_residual_length is not None and self.semantic_residual_length < 0:
+            raise ValueError("semantic_residual_length must be >= 0 or None.")
+        if self.semantic_residual_min_context < 0:
+            raise ValueError("semantic_residual_min_context must be >= 0.")
         if not 0.0 <= self.low_priority_ratio <= 1.0:
             raise ValueError("low_priority_ratio must be in [0, 1].")
         if self.min_low_priority_tokens < 0:
@@ -539,6 +545,9 @@ def hf_cache_to_tuple(
 
 
 def _cache_layer_seq_length(layer: object, keys: torch.Tensor) -> int:
+    if "dynamic" in type(layer).__name__.lower():
+        return keys.shape[2]
+
     seq_len = None
     get_seq_length = getattr(layer, "get_seq_length", None)
     if callable(get_seq_length):
@@ -581,7 +590,14 @@ def build_retention_mask(
     if sink:
         mask[:sink] = True
 
-    residual = min(config.residual_length, seq_len)
+    residual_length = config.residual_length
+    if (
+        importance_scores is not None
+        and config.semantic_residual_length is not None
+        and seq_len >= config.semantic_residual_min_context
+    ):
+        residual_length = config.semantic_residual_length
+    residual = min(residual_length, seq_len)
     if residual:
         mask[-residual:] = True
 

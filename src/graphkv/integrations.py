@@ -17,7 +17,7 @@ def quantize_hf_cache(
     graph_memory: GraphMemoryRequest | None = None,
     graph_mneme: GraphMemoryRequest | None = None,
     graph_mneme_model: GraphMemory17L | None = None,
-    graph_mneme_device: str = "cpu",
+    graph_mneme_device: str = "auto",
     output: str = "dynamic",
     model_config: object | None = None,
     max_cache_len: int | None = None,
