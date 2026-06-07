@@ -25,7 +25,7 @@ Measured on an NVIDIA GeForce RTX 4070 Ti SUPER with PyTorch CUDA.
 | Qwen2.5-7B NF4, 1k-token cache, next-token decode | `graphkv-qwen7-nf4` | `43,352,064 / 58,720,256` | `1.35x` | cosine `0.827394`, top10 `0.80`, argmax match |
 | Qwen2.5-7B NF4, 4k-token cache, next-token decode | `graphkv-qwen7-nf4` | `95,993,856 / 234,881,024` | `2.45x` | cosine `0.830570`, top10 `0.70`, argmax match |
 | Qwen2.5-7B NF4, 16k-token cache, next-token decode | `graphkv-qwen7-nf4` | `292,454,400 / 939,524,096` | `3.21x` | cosine `0.998599`, top10 `1.00`, argmax match |
-| Qwen2.5-7B NF4, 16k-token Graph Mneme retest | `graphkv-mneme` | `305,655,168 / 939,524,096` | `3.07x` | cosine `0.999789`, top10 `1.00`, argmax match |
+| Qwen2.5-7B NF4, 16k-token GraphKV default retest | `graphkv` | `274,548,736 / 939,524,096` | `3.42x` | cosine `0.999749`, top10 `1.00`, argmax match |
 | Qwen2.5-7B NF4, 32k-token cache, next-token decode | `graphkv-qwen7-nf4` | `558,530,560 / 1,879,048,192` | `3.36x` | cosine `0.990316`, top10 `1.00`, argmax match |
 
 The Qwen2.5-7B runs use real chunked prefill, then compare a one-token decode
@@ -48,7 +48,7 @@ the old local `rustembed` folder to load the graph model:
 
 ```python
 from graphkv import (
-    GraphMnemeRequest,
+    GraphMemoryRequest,
     GraphRetentionChunk,
     bundled_graph_model_metadata,
     quantize_hf_cache,
@@ -56,7 +56,7 @@ from graphkv import (
 
 print(bundled_graph_model_metadata()["eval_metrics"]["wikikg2"])
 
-graph_memory = GraphMnemeRequest(
+graph_memory = GraphMemoryRequest(
     query_anchor=0,
     query_relation=7,
     query_facts=[(0, 7, 1), (1, 9, 2)],
@@ -68,7 +68,7 @@ graph_memory = GraphMnemeRequest(
 
 compressed_cache = quantize_hf_cache(
     past_key_values,
-    graph_mneme=graph_memory,
+    graph_memory=graph_memory,
     output="compressed",
 )
 print(compressed_cache.stats())
@@ -78,24 +78,23 @@ The bundled model card records `0.54` MRR on WikiKG2 with
 `num_global_relations=0`. GraphKV uses that graph-ranking signal to protect
 semantically important token spans before low-bit KV packing.
 
-## Graph Mneme Retest
+## GraphKV Retest
 
-After adding the Graph Mneme retention API, GraphKV was retested locally on
+After adding the built-in Mneme retention API, GraphKV was retested locally on
 `Qwen/Qwen2.5-7B` NF4 with a 16k-token code-shaped prompt. The target code span
-was placed in the middle of the cache, outside the prompt sink and recent tail,
-and Graph Mneme ranked the target chunks first. The calibrated policy keeps 2%
-of graph-ranked candidate tokens only at 8k+ context lengths.
+was placed in the middle of the cache, outside the prompt sink and recent tail.
+The default `graphkv` profile keeps a 128-token sink, a 256-token tail, and 1%
+of Mneme-ranked candidate tokens only at 8k+ context lengths.
 
 | Setup | Cache length | Cache bytes | Compression | Fidelity |
 | --- | ---: | ---: | ---: | --- |
 | GraphKV plain `graphkv-qwen7-nf4` | 16k | `292,454,400 / 939,524,096` | `3.21x` | cosine `0.979474`, top10 `0.80`, argmax match |
-| GraphKV + Graph Mneme retention | 16k | `305,655,168 / 939,524,096` | `3.07x` | cosine `0.999789`, top10 `1.00`, argmax match |
+| GraphKV default with built-in Mneme | 16k | `274,548,736 / 939,524,096` | `3.42x` | cosine `0.999749`, top10 `1.00`, argmax match |
 
 The same sweep rejected an aggressive 6% plus 128-token minimum graph-retention
 policy at 16k because it over-retained, dropped cosine to `0.906118`, and
-changed argmax. The default `graphkv-mneme` profile therefore uses the
-calibrated 2% long-context graph policy when Graph Mneme chunks or importance
-scores are supplied.
+changed argmax. The default `graphkv` profile uses the calibrated 1%
+long-context graph policy when graph memory or importance scores are supplied.
 
 ## Qwen 7B NF4 Comparison
 
@@ -164,14 +163,14 @@ print(cache.compression_ratio())
 
 GraphKV tensor profiles:
 
-- `graphkv-mneme`: default Graph Mneme-guided profile, tuned for long-context
-  fidelity with a 128-token sink, 512-token tail, and calibrated graph retention
-  above 8k tokens when graph memory is supplied.
+- `graphkv`: default profile with Mneme built in, tuned for long-context
+  fidelity with a 128-token sink, 256-token tail, 64-token quant groups, and
+  calibrated graph retention above 8k tokens when graph memory is supplied.
 - `graphkv-int2-max`: aggressive 2-bit affine packing.
 - `graphkv-int4-balanced`: 4-bit symmetric, tuned for grouped-query models.
 - `graphkv-int4-safe`: 4-bit with sink/tail retention and outlier retention.
-- `graphkv-qwen7-nf4`: alias of `graphkv-mneme`, tuned locally on
-  Qwen2.5-7B NF4.
+- `graphkv-qwen7-nf4`: conservative Qwen2.5-7B NF4 profile used for local
+  TurboQuant comparison rows.
 
 Native engine recipes:
 
@@ -227,7 +226,7 @@ default and were not included in the repository.
 
 ## Why These Axes?
 
-GraphKV uses Graph Mneme retention plus asymmetric KV grouping: keys are
+GraphKV uses built-in Mneme retention plus asymmetric KV grouping: keys are
 grouped over token blocks so each channel gets its own scale over time, while
 values are grouped over channels for per-token scales. The package exposes
 retention hooks for semantic or graph-derived token importance scores.

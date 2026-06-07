@@ -5,16 +5,17 @@ import shlex
 from typing import Iterable
 
 from .core import QuantizedKvCache, hf_cache_to_tuple
-from .graph_model import GraphMemory17L, GraphMnemeRequest, graph_mneme_request_token_scores
+from .graph_model import GraphMemory17L, GraphMemoryRequest, graph_mneme_request_token_scores
 from .profiles import GraphKVProfile, get_profile, list_profiles
 
 
 def quantize_hf_cache(
     past_key_values: object,
-    profile: str | GraphKVProfile = "graphkv-mneme",
+    profile: str | GraphKVProfile = "graphkv",
     *,
     importance_scores=None,
-    graph_mneme: GraphMnemeRequest | None = None,
+    graph_memory: GraphMemoryRequest | None = None,
+    graph_mneme: GraphMemoryRequest | None = None,
     graph_mneme_model: GraphMemory17L | None = None,
     graph_mneme_device: str = "cpu",
     output: str = "dynamic",
@@ -28,18 +29,19 @@ def quantize_hf_cache(
     before returning to the engine. For real speedups, use GraphKV's packed cache
     directly or add fused low-bit attention kernels.
 
-    When `graph_mneme` is supplied, GraphKV loads/scores the bundled Graph Mneme
+    When `graph_memory` is supplied, GraphKV scores it with the bundled Mneme
     model and uses those scores as token-retention importance. Explicit
-    `importance_scores` take precedence over `graph_mneme`.
+    `importance_scores` take precedence over graph memory.
     """
 
     selected = get_profile(profile)
     if selected.config is None:
         raise ValueError(f"Profile {selected.name!r} is an engine-native recipe, not a GraphKV profile.")
-    if importance_scores is None and graph_mneme is not None:
+    graph_request = graph_memory if graph_memory is not None else graph_mneme
+    if importance_scores is None and graph_request is not None:
         importance_scores = graph_mneme_request_token_scores(
             _hf_cache_seq_len(past_key_values),
-            graph_mneme,
+            graph_request,
             model=graph_mneme_model,
             device=graph_mneme_device,
         )

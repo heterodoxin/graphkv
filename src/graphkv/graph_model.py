@@ -65,7 +65,7 @@ class GraphRetentionChunk:
 
 
 @dataclass(frozen=True)
-class GraphMnemeRequest:
+class GraphMemoryRequest:
     """Graph query plus candidate chunks for automatic KV-retention scoring."""
 
     query_anchor: int
@@ -74,6 +74,9 @@ class GraphMnemeRequest:
     chunks: Sequence[GraphRetentionChunk]
     normalize: Literal["none", "minmax", "zscore"] = "minmax"
     shuffle_seed: int | None = None
+
+
+GraphMnemeRequest = GraphMemoryRequest
 
 
 class FactGraphAttention(nn.Module):
@@ -312,12 +315,12 @@ def build_graph_mneme_token_scores(
 
 def graph_mneme_request_token_scores(
     seq_len: int,
-    request: GraphMnemeRequest,
+    request: GraphMemoryRequest,
     *,
     model: GraphMemory17L | None = None,
     device: torch.device | str | None = None,
 ) -> torch.Tensor:
-    """Score a `GraphMnemeRequest` over a KV cache sequence length."""
+    """Score a `GraphMemoryRequest` over a KV cache sequence length."""
 
     return build_graph_mneme_token_scores(
         seq_len,

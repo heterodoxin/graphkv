@@ -9,7 +9,22 @@ from .core import KvQuantConfig
 Engine = Literal["graphkv", "vllm", "llama.cpp"]
 
 
-MNEME_DEFAULT_CONFIG = KvQuantConfig(
+GRAPHKV_DEFAULT_CONFIG = KvQuantConfig(
+    bits=4,
+    group_size=64,
+    residual_length=256,
+    sink_length=128,
+    quantizer="affine",
+    long_context_threshold=8192,
+    long_context_quantizer="symmetric",
+    key_group_axis="token",
+    value_group_axis="channel",
+    semantic_protection_ratio=0.01,
+    semantic_protection_min_context=8192,
+)
+
+
+QWEN7_NF4_COMPARISON_CONFIG = KvQuantConfig(
     bits=4,
     group_size=32,
     residual_length=512,
@@ -41,11 +56,11 @@ class GraphKVProfile:
 
 
 PROFILES: dict[str, GraphKVProfile] = {
-    "graphkv-mneme": GraphKVProfile(
-        name="graphkv-mneme",
+    "graphkv": GraphKVProfile(
+        name="graphkv",
         engine="graphkv",
-        description="Default Graph Mneme-guided profile for long-context fidelity.",
-        config=MNEME_DEFAULT_CONFIG,
+        description="Default GraphKV profile with built-in Mneme-guided long-context retention.",
+        config=GRAPHKV_DEFAULT_CONFIG,
     ),
     "graphkv-int2-max": GraphKVProfile(
         name="graphkv-int2-max",
@@ -92,8 +107,8 @@ PROFILES: dict[str, GraphKVProfile] = {
     "graphkv-qwen7-nf4": GraphKVProfile(
         name="graphkv-qwen7-nf4",
         engine="graphkv",
-        description="Alias of graphkv-mneme, tuned locally on Qwen2.5-7B NF4.",
-        config=MNEME_DEFAULT_CONFIG,
+        description="Conservative Qwen2.5-7B NF4 profile used for local comparison rows.",
+        config=QWEN7_NF4_COMPARISON_CONFIG,
     ),
     "vllm-fp8": GraphKVProfile(
         name="vllm-fp8",
