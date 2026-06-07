@@ -38,6 +38,12 @@ class KvQuantConfig:
     semantic_protection_ratio: float = 0.0
     min_protected_tokens: int = 0
     semantic_protection_min_context: int = 0
+    low_priority_ratio: float = 0.0
+    min_low_priority_tokens: int = 0
+    low_priority_min_context: int = 0
+    low_priority_bits: int | None = None
+    low_priority_key_bits: int | None = None
+    low_priority_value_bits: int | None = None
     outlier_protection_ratio: float = 0.0
     min_outlier_tokens: int = 0
     pack_int4: bool = True
@@ -76,6 +82,18 @@ class KvQuantConfig:
             raise ValueError("min_protected_tokens must be >= 0.")
         if self.semantic_protection_min_context < 0:
             raise ValueError("semantic_protection_min_context must be >= 0.")
+        if not 0.0 <= self.low_priority_ratio <= 1.0:
+            raise ValueError("low_priority_ratio must be in [0, 1].")
+        if self.min_low_priority_tokens < 0:
+            raise ValueError("min_low_priority_tokens must be >= 0.")
+        if self.low_priority_min_context < 0:
+            raise ValueError("low_priority_min_context must be >= 0.")
+        if self.low_priority_bits is not None and self.low_priority_bits not in {2, 4, 8}:
+            raise ValueError("low_priority_bits must be 2, 4, 8, or None.")
+        if self.low_priority_key_bits is not None and self.low_priority_key_bits not in {2, 4, 8}:
+            raise ValueError("low_priority_key_bits must be 2, 4, 8, or None.")
+        if self.low_priority_value_bits is not None and self.low_priority_value_bits not in {2, 4, 8}:
+            raise ValueError("low_priority_value_bits must be 2, 4, 8, or None.")
         if not 0.0 <= self.outlier_protection_ratio <= 1.0:
             raise ValueError("outlier_protection_ratio must be in [0, 1].")
         if self.min_outlier_tokens < 0:
@@ -139,6 +157,9 @@ class QuantizedKvLayer:
     seq_dim: int = 2
     passthrough_keys: torch.Tensor | None = None
     passthrough_values: torch.Tensor | None = None
+    low_priority_compressed_keys: QuantizedTensor | None = None
+    low_priority_compressed_values: QuantizedTensor | None = None
+    low_priority_compressed_indices: torch.Tensor | None = None
 
     def memory_bytes(self) -> int:
         if self.passthrough_keys is not None and self.passthrough_values is not None:
@@ -147,6 +168,17 @@ class QuantizedKvLayer:
             (self.compressed_keys.memory_bytes() if self.compressed_keys is not None else 0)
             + (self.compressed_values.memory_bytes() if self.compressed_values is not None else 0)
             + _tensor_nbytes(self.compressed_indices)
+            + (
+                self.low_priority_compressed_keys.memory_bytes()
+                if self.low_priority_compressed_keys is not None
+                else 0
+            )
+            + (
+                self.low_priority_compressed_values.memory_bytes()
+                if self.low_priority_compressed_values is not None
+                else 0
+            )
+            + _tensor_nbytes(self.low_priority_compressed_indices)
             + _tensor_nbytes(self.retained_keys)
             + _tensor_nbytes(self.retained_values)
             + _tensor_nbytes(self.retained_indices)
@@ -171,6 +203,7 @@ class QuantizedKvLayer:
         compressed_bytes = self.memory_bytes()
         retained_tokens = self.retained_token_count()
         compressed_tokens = self.compressed_token_count()
+        low_priority_tokens = self.low_priority_token_count()
         total_tokens = retained_tokens + compressed_tokens
         return {
             "original_bytes": float(original_bytes),
@@ -178,6 +211,8 @@ class QuantizedKvLayer:
             "compression_ratio": original_bytes / max(compressed_bytes, 1),
             "retained_tokens": float(retained_tokens),
             "compressed_tokens": float(compressed_tokens),
+            "standard_compressed_tokens": float(compressed_tokens - low_priority_tokens),
+            "low_priority_tokens": float(low_priority_tokens),
             "retained_fraction": retained_tokens / max(total_tokens, 1),
             "compressed_fraction": compressed_tokens / max(total_tokens, 1),
         }
@@ -190,7 +225,12 @@ class QuantizedKvLayer:
     def compressed_token_count(self) -> int:
         if self.passthrough_keys is not None:
             return 0
-        return int(self.compressed_indices.numel())
+        return int(self.compressed_indices.numel()) + self.low_priority_token_count()
+
+    def low_priority_token_count(self) -> int:
+        if self.passthrough_keys is not None or self.low_priority_compressed_indices is None:
+            return 0
+        return int(self.low_priority_compressed_indices.numel())
 
     def dequantize(self) -> tuple[torch.Tensor, torch.Tensor]:
         if self.passthrough_keys is not None and self.passthrough_values is not None:
@@ -209,6 +249,26 @@ class QuantizedKvLayer:
             keys.index_copy_(self.seq_dim, self.compressed_indices.long(), self.compressed_keys.dequantize())
         if self.compressed_values is not None and self.compressed_indices.numel() > 0:
             values.index_copy_(self.seq_dim, self.compressed_indices.long(), self.compressed_values.dequantize())
+        if (
+            self.low_priority_compressed_keys is not None
+            and self.low_priority_compressed_indices is not None
+            and self.low_priority_compressed_indices.numel() > 0
+        ):
+            keys.index_copy_(
+                self.seq_dim,
+                self.low_priority_compressed_indices.long(),
+                self.low_priority_compressed_keys.dequantize(),
+            )
+        if (
+            self.low_priority_compressed_values is not None
+            and self.low_priority_compressed_indices is not None
+            and self.low_priority_compressed_indices.numel() > 0
+        ):
+            values.index_copy_(
+                self.seq_dim,
+                self.low_priority_compressed_indices.long(),
+                self.low_priority_compressed_values.dequantize(),
+            )
         if self.retained_indices.numel() > 0:
             retain_idx = self.retained_indices.long()
             keys.index_copy_(self.seq_dim, retain_idx, self.retained_keys)
@@ -296,11 +356,15 @@ class QuantizedKvCache:
     def compressed_token_count(self) -> int:
         return sum(layer.compressed_token_count() for layer in self.layers)
 
+    def low_priority_token_count(self) -> int:
+        return sum(layer.low_priority_token_count() for layer in self.layers)
+
     def stats(self) -> dict[str, float]:
         original_bytes = self.original_memory_bytes()
         compressed_bytes = self.memory_bytes()
         retained_tokens = self.retained_token_count()
         compressed_tokens = self.compressed_token_count()
+        low_priority_tokens = self.low_priority_token_count()
         total_tokens = retained_tokens + compressed_tokens
         layer_ratios = [layer.compression_ratio() for layer in self.layers]
         return {
@@ -310,6 +374,8 @@ class QuantizedKvCache:
             "compression_ratio": original_bytes / max(compressed_bytes, 1),
             "retained_tokens": float(retained_tokens),
             "compressed_tokens": float(compressed_tokens),
+            "standard_compressed_tokens": float(compressed_tokens - low_priority_tokens),
+            "low_priority_tokens": float(low_priority_tokens),
             "retained_fraction": retained_tokens / max(total_tokens, 1),
             "compressed_fraction": compressed_tokens / max(total_tokens, 1),
             "min_layer_compression_ratio": min(layer_ratios, default=0.0),
@@ -576,15 +642,48 @@ def quantize_kv_layer(
         if retain_mask.numel() != seq_len:
             raise ValueError("retain_mask must have one value per token.")
 
+    compressed_mask = ~retain_mask
+    low_priority_mask = torch.zeros(seq_len, dtype=torch.bool, device=device)
+    if (
+        importance_scores is not None
+        and seq_len >= config.low_priority_min_context
+        and (config.low_priority_ratio > 0.0 or config.min_low_priority_tokens > 0)
+        and (
+            config.low_priority_bits is not None
+            or config.low_priority_key_bits is not None
+            or config.low_priority_value_bits is not None
+        )
+        and bool(compressed_mask.any())
+    ):
+        scores = _normalize_token_scores(seq_len, importance_scores, device)
+        candidate_indices = torch.nonzero(compressed_mask, as_tuple=False).flatten()
+        candidate_count = int(candidate_indices.numel())
+        keep = min(
+            candidate_count,
+            max(ceil(candidate_count * config.low_priority_ratio), config.min_low_priority_tokens),
+        )
+        if keep > 0:
+            bottom = torch.topk(
+                scores.index_select(0, candidate_indices),
+                k=keep,
+                largest=False,
+            ).indices
+            low_priority_mask[candidate_indices.index_select(0, bottom)] = True
+
+    standard_compressed_mask = compressed_mask & ~low_priority_mask
+
     all_indices = torch.arange(seq_len, device=device)
     retained_indices = all_indices[retain_mask].to(torch.int32)
-    compressed_indices = all_indices[~retain_mask].to(torch.int32)
+    compressed_indices = all_indices[standard_compressed_mask].to(torch.int32)
+    low_priority_compressed_indices = all_indices[low_priority_mask].to(torch.int32)
 
     retained_keys = keys.index_select(seq_dim, retained_indices.long()).contiguous()
     retained_values = values.index_select(seq_dim, retained_indices.long()).contiguous()
 
     compressed_keys = None
     compressed_values = None
+    low_priority_compressed_keys = None
+    low_priority_compressed_values = None
     if compressed_indices.numel() > 0:
         key_src = keys.index_select(seq_dim, compressed_indices.long()).contiguous()
         value_src = values.index_select(seq_dim, compressed_indices.long()).contiguous()
@@ -594,6 +693,24 @@ def quantize_kv_layer(
         value_config = replace(quant_config, bits=quant_config.value_bits or quant_config.bits)
         compressed_keys = _quantize_tensor(key_src, key_config, axis=key_axis)
         compressed_values = _quantize_tensor(value_src, value_config, axis=value_axis)
+    if low_priority_compressed_indices.numel() > 0:
+        key_src = keys.index_select(seq_dim, low_priority_compressed_indices.long()).contiguous()
+        value_src = values.index_select(seq_dim, low_priority_compressed_indices.long()).contiguous()
+        key_axis = seq_dim if config.key_group_axis == "token" else head_dim
+        value_axis = seq_dim if config.value_group_axis == "token" else head_dim
+        low_bits = config.low_priority_bits or quant_config.bits
+        low_key_bits = config.low_priority_key_bits or low_bits
+        low_value_bits = config.low_priority_value_bits or low_bits
+        low_priority_compressed_keys = _quantize_tensor(
+            key_src,
+            replace(quant_config, bits=low_key_bits),
+            axis=key_axis,
+        )
+        low_priority_compressed_values = _quantize_tensor(
+            value_src,
+            replace(quant_config, bits=low_value_bits),
+            axis=value_axis,
+        )
 
     layer = QuantizedKvLayer(
         compressed_keys=compressed_keys,
@@ -604,6 +721,9 @@ def quantize_kv_layer(
         retained_indices=retained_indices,
         original_shape=tuple(keys.shape),
         seq_dim=seq_dim,
+        low_priority_compressed_keys=low_priority_compressed_keys,
+        low_priority_compressed_values=low_priority_compressed_values,
+        low_priority_compressed_indices=low_priority_compressed_indices,
     )
     if config.skip_if_not_smaller and layer.memory_bytes() >= layer.original_memory_bytes():
         return _full_precision_layer(keys, values, seq_dim)

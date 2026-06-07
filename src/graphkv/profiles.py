@@ -21,6 +21,9 @@ GRAPHKV_DEFAULT_CONFIG = KvQuantConfig(
     value_group_axis="channel",
     semantic_protection_ratio=0.01,
     semantic_protection_min_context=8192,
+    low_priority_ratio=0.25,
+    low_priority_min_context=8192,
+    low_priority_value_bits=2,
 )
 
 
@@ -59,7 +62,7 @@ PROFILES: dict[str, GraphKVProfile] = {
     "graphkv": GraphKVProfile(
         name="graphkv",
         engine="graphkv",
-        description="Default GraphKV profile with built-in Mneme-guided long-context retention.",
+        description="Default GraphKV profile with built-in Mneme-guided retention and tiering.",
         config=GRAPHKV_DEFAULT_CONFIG,
     ),
     "graphkv-int2-max": GraphKVProfile(

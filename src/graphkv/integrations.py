@@ -30,8 +30,8 @@ def quantize_hf_cache(
     directly or add fused low-bit attention kernels.
 
     When `graph_memory` is supplied, GraphKV scores it with the bundled Mneme
-    model and uses those scores as token-retention importance. Explicit
-    `importance_scores` take precedence over graph memory.
+    model and uses those scores for token retention and low-priority bit
+    routing. Explicit `importance_scores` take precedence over graph memory.
     """
 
     selected = get_profile(profile)
