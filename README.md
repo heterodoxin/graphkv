@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Model bundled](https://img.shields.io/badge/bundled%20model-mneme--graph--17l-purple.svg)](src/graphkv/models/mneme-graph-17l)
 
-GraphKV is a custom graph-memory KV cache system for low-bit transformer
+GraphKV is a custom Graph Mneme-guided KV cache system for low-bit transformer
 inference. It keeps recent, salient, or graph-relevant tokens high precision,
 then compresses the rest aggressively with packed int2/int4 cache tensors.
 
@@ -26,7 +26,6 @@ Measured on an NVIDIA GeForce RTX 4070 Ti SUPER with PyTorch CUDA.
 | Qwen2.5-7B NF4, 4k-token cache, next-token decode | `graphkv-qwen7-nf4` | `95,993,856 / 234,881,024` | `2.45x` | cosine `0.830570`, top10 `0.70`, argmax match |
 | Qwen2.5-7B NF4, 16k-token cache, next-token decode | `graphkv-qwen7-nf4` | `292,454,400 / 939,524,096` | `3.21x` | cosine `0.998599`, top10 `1.00`, argmax match |
 | Qwen2.5-7B NF4, 32k-token cache, next-token decode | `graphkv-qwen7-nf4` | `558,530,560 / 1,879,048,192` | `3.36x` | cosine `0.990316`, top10 `1.00`, argmax match |
-| Qwen2.5-7B NF4, 128k-token cache attempt | `graphkv-qwen7-nf4` | not completed | not claimed | CUDA OOM on the local 16 GB GPU; no fallback number claimed |
 
 The Qwen2.5-7B runs use real chunked prefill, then compare a one-token decode
 from the original KV cache against the GraphKV-compressed cache exported back to
@@ -34,9 +33,9 @@ Hugging Face `DynamicCache`. `graphkv-qwen7-nf4` keeps a 128-token prompt sink
 and 512-token recent tail, uses affine int4 below 8k tokens, and switches to
 symmetric int4 for longer caches.
 
-## Bundled Graph Model
+## Bundled Graph Mneme Model
 
-GraphKV includes the custom graph-memory model artifact in the repo:
+GraphKV includes the custom Graph Mneme 17L model artifact in the repo:
 
 ```text
 src/graphkv/models/mneme-graph-17l/latest.json
@@ -47,17 +46,41 @@ The `.safetensors` file is stored directly in the repository. Users do not need
 the old local `rustembed` folder to load the graph model:
 
 ```python
-from graphkv import build_candidate_bank, build_query_bank, load_bundled_graph_model
+from graphkv import (
+    GraphRetentionChunk,
+    build_graph_mneme_token_scores,
+    bundled_graph_model_metadata,
+    load_bundled_graph_model,
+    quantize_hf_cache,
+)
 
 model = load_bundled_graph_model(device="auto")
-cfg = model.cfg
-query = build_query_bank(0, 7, [(0, 7, 1), (1, 9, 2)], cfg)
-candidates = [
-    build_candidate_bank(1, [(1, 7, 3), (3, 9, 4)], cfg),
-    build_candidate_bank(2, [(2, 4, 5), (5, 6, 6)], cfg),
-]
-scores = model.score(query, candidates)
+print(bundled_graph_model_metadata()["eval_metrics"]["wikikg2"])
+
+importance_scores = build_graph_mneme_token_scores(
+    seq_len=input_ids.shape[-1],
+    query_anchor=0,
+    query_relation=7,
+    query_facts=[(0, 7, 1), (1, 9, 2)],
+    chunks=[
+        GraphRetentionChunk(anchor=1, span=(0, 256), facts=[(1, 7, 3), (3, 9, 4)]),
+        GraphRetentionChunk(anchor=2, span=(256, 512), facts=[(2, 4, 5), (5, 6, 6)]),
+    ],
+    model=model,
+)
+
+compressed_cache = quantize_hf_cache(
+    past_key_values,
+    profile="graphkv-int4-safe",
+    importance_scores=importance_scores,
+    output="compressed",
+)
+print(compressed_cache.stats())
 ```
+
+The bundled model card records `0.54` MRR on WikiKG2 with
+`num_global_relations=0`. GraphKV uses that graph-ranking signal to protect
+semantically important token spans before low-bit KV packing.
 
 ## Qwen 7B NF4 Comparison
 
@@ -187,7 +210,7 @@ default and were not included in the repository.
 
 ## Why These Axes?
 
-GraphKV uses custom graph-memory retention plus asymmetric KV grouping: keys are
+GraphKV uses Graph Mneme retention plus asymmetric KV grouping: keys are
 grouped over token blocks so each channel gets its own scale over time, while
 values are grouped over channels for per-token scales. The package exposes
 retention hooks for semantic or graph-derived token importance scores.

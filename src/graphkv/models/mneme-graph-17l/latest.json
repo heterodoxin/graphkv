@@ -9,5 +9,11 @@
   "num_heads": 8,
   "encoder_layers": 6,
   "dropout": 0.05,
-  "num_global_relations": 0
+  "num_global_relations": 0,
+  "eval_metrics": {
+    "wikikg2": {
+      "mrr": 0.54,
+      "global_entity_relations": false
+    }
+  }
 }

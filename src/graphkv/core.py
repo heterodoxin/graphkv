@@ -163,6 +163,22 @@ class QuantizedKvLayer:
     def compression_ratio(self) -> float:
         return self.original_memory_bytes() / max(self.memory_bytes(), 1)
 
+    def stats(self) -> dict[str, float]:
+        original_bytes = self.original_memory_bytes()
+        compressed_bytes = self.memory_bytes()
+        retained_tokens = self.retained_token_count()
+        compressed_tokens = self.compressed_token_count()
+        total_tokens = retained_tokens + compressed_tokens
+        return {
+            "original_bytes": float(original_bytes),
+            "compressed_bytes": float(compressed_bytes),
+            "compression_ratio": original_bytes / max(compressed_bytes, 1),
+            "retained_tokens": float(retained_tokens),
+            "compressed_tokens": float(compressed_tokens),
+            "retained_fraction": retained_tokens / max(total_tokens, 1),
+            "compressed_fraction": compressed_tokens / max(total_tokens, 1),
+        }
+
     def retained_token_count(self) -> int:
         if self.passthrough_keys is not None:
             return self.original_shape[self.seq_dim]
@@ -270,6 +286,35 @@ class QuantizedKvCache:
 
     def compression_ratio(self) -> float:
         return self.original_memory_bytes() / max(self.memory_bytes(), 1)
+
+    def retained_token_count(self) -> int:
+        return sum(layer.retained_token_count() for layer in self.layers)
+
+    def compressed_token_count(self) -> int:
+        return sum(layer.compressed_token_count() for layer in self.layers)
+
+    def stats(self) -> dict[str, float]:
+        original_bytes = self.original_memory_bytes()
+        compressed_bytes = self.memory_bytes()
+        retained_tokens = self.retained_token_count()
+        compressed_tokens = self.compressed_token_count()
+        total_tokens = retained_tokens + compressed_tokens
+        layer_ratios = [layer.compression_ratio() for layer in self.layers]
+        return {
+            "layers": float(len(self.layers)),
+            "original_bytes": float(original_bytes),
+            "compressed_bytes": float(compressed_bytes),
+            "compression_ratio": original_bytes / max(compressed_bytes, 1),
+            "retained_tokens": float(retained_tokens),
+            "compressed_tokens": float(compressed_tokens),
+            "retained_fraction": retained_tokens / max(total_tokens, 1),
+            "compressed_fraction": compressed_tokens / max(total_tokens, 1),
+            "min_layer_compression_ratio": min(layer_ratios, default=0.0),
+            "max_layer_compression_ratio": max(layer_ratios, default=0.0),
+        }
+
+    def layer_stats(self) -> tuple[dict[str, float], ...]:
+        return tuple(layer.stats() for layer in self.layers)
 
     def append(
         self,

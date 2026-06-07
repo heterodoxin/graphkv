@@ -5,7 +5,7 @@ import random
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Literal, Sequence
 
 import torch
 from torch import nn
@@ -52,6 +52,16 @@ class GraphFactBank:
 class GraphQueryBank:
     facts: GraphFactBank
     query_relation: int
+
+
+@dataclass(frozen=True)
+class GraphRetentionChunk:
+    """A text/token span backed by local graph facts."""
+
+    anchor: int
+    span: tuple[int, int]
+    facts: Sequence[tuple[int, int, int]]
+    shuffle_seed: int | None = None
 
 
 class FactGraphAttention(nn.Module):
@@ -163,6 +173,8 @@ class GraphMemory17L(nn.Module):
     ) -> torch.Tensor:
         if device is None:
             device = next(self.parameters()).device
+        if len(candidates) == 0:
+            return torch.empty(0, dtype=torch.float32, device=device)
         q_src, q_rel, q_dst = query.facts.as_batch(device)
         qrel = torch.tensor([query.query_relation], dtype=torch.long, device=device)
         query_vec = self.encode_query(q_src, q_rel, q_dst, qrel)
@@ -178,6 +190,13 @@ def bundled_graph_model_dir() -> Path:
     return Path(str(files("graphkv").joinpath("models", "mneme-graph-17l")))
 
 
+def bundled_graph_model_metadata() -> dict[str, object]:
+    """Return the bundled Graph Mneme model card/config JSON."""
+
+    model_dir = bundled_graph_model_dir()
+    return json.loads((model_dir / "latest.json").read_text())
+
+
 def load_bundled_graph_model(device: str | torch.device = "auto") -> GraphMemory17L:
     from safetensors.torch import load_file
 
@@ -191,6 +210,117 @@ def load_bundled_graph_model(device: str | torch.device = "auto") -> GraphMemory
     model.load_state_dict(load_file(model_dir / "latest.safetensors", device=str(device)))
     model.eval()
     return model
+
+
+def graph_mneme_chunk_scores(
+    query: GraphQueryBank,
+    candidates: Sequence[GraphFactBank],
+    *,
+    model: GraphMemory17L | None = None,
+    device: torch.device | str | None = None,
+    normalize: Literal["none", "minmax", "zscore"] = "minmax",
+) -> torch.Tensor:
+    """Score graph-backed chunks with the bundled Graph Mneme model."""
+
+    if model is None:
+        model = load_bundled_graph_model(device=device or "auto")
+    elif device is not None:
+        model = model.to(torch.device(device))
+    scores = model.score(query, candidates, device=device)
+    return normalize_graph_scores(scores, mode=normalize)
+
+
+def graph_mneme_token_scores(
+    seq_len: int,
+    chunk_spans: Iterable[tuple[int, int]],
+    query: GraphQueryBank,
+    candidates: Sequence[GraphFactBank],
+    *,
+    model: GraphMemory17L | None = None,
+    device: torch.device | str | None = None,
+    normalize: Literal["none", "minmax", "zscore"] = "minmax",
+) -> torch.Tensor:
+    """Return one Graph Mneme importance score per token for KV retention."""
+
+    from .core import chunk_scores_to_token_scores
+
+    scores = graph_mneme_chunk_scores(
+        query,
+        candidates,
+        model=model,
+        device=device,
+        normalize=normalize,
+    )
+    return chunk_scores_to_token_scores(seq_len, chunk_spans, scores, device=scores.device)
+
+
+def build_graph_mneme_token_scores(
+    seq_len: int,
+    *,
+    query_anchor: int,
+    query_relation: int,
+    query_facts: Iterable[tuple[int, int, int]],
+    chunks: Sequence[GraphRetentionChunk],
+    model: GraphMemory17L | None = None,
+    device: torch.device | str | None = None,
+    normalize: Literal["none", "minmax", "zscore"] = "minmax",
+    shuffle_seed: int | None = None,
+) -> torch.Tensor:
+    """Build query/candidate banks, score chunks, and spread scores over tokens."""
+
+    if model is None:
+        model = load_bundled_graph_model(device=device or "auto")
+    cfg = model.cfg
+    query = build_query_bank(
+        query_anchor,
+        query_relation,
+        query_facts,
+        cfg,
+        shuffle_seed=shuffle_seed,
+    )
+    candidates = [
+        build_candidate_bank(
+            chunk.anchor,
+            chunk.facts,
+            cfg,
+            shuffle_seed=chunk.shuffle_seed,
+        )
+        for chunk in chunks
+    ]
+    return graph_mneme_token_scores(
+        seq_len,
+        [chunk.span for chunk in chunks],
+        query,
+        candidates,
+        model=model,
+        device=device,
+        normalize=normalize,
+    )
+
+
+def normalize_graph_scores(
+    scores: torch.Tensor,
+    *,
+    mode: Literal["none", "minmax", "zscore"] = "minmax",
+) -> torch.Tensor:
+    """Normalize graph scores while preserving their ranking."""
+
+    scores = scores.to(dtype=torch.float32)
+    if mode == "none" or scores.numel() == 0:
+        return scores
+    if mode == "minmax":
+        lo = scores.min()
+        hi = scores.max()
+        if bool((hi - lo).abs() < 1.0e-8):
+            return torch.ones_like(scores)
+        return (scores - lo) / (hi - lo)
+    if mode == "zscore":
+        mean = scores.mean()
+        std = scores.std(unbiased=False)
+        if bool(std < 1.0e-8):
+            return torch.zeros_like(scores)
+        return (scores - mean) / std
+    raise ValueError("mode must be 'none', 'minmax', or 'zscore'.")
 
 
 def build_fact_bank(
