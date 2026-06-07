@@ -25,6 +25,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+  "safetensors>=0.4",
   "torch>=2.1",
 ]
 
@@ -38,6 +39,9 @@ Issues = "https://github.com/heterodoxin/graphkv/issues"
 
 [project.scripts]
 graphkv-recipes = "graphkv.integrations:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/graphkv"]
 
 [tool.ruff]
 line-length = 100

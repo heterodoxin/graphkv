@@ -1,0 +1,13 @@
+{
+  "model_name": "mneme-graph-17l",
+  "num_entities": 128,
+  "num_facts": 64,
+  "num_cand_facts": 32,
+  "num_candidates": 64,
+  "num_relations": 512,
+  "d_model": 256,
+  "num_heads": 8,
+  "encoder_layers": 6,
+  "dropout": 0.05,
+  "num_global_relations": 0
+}

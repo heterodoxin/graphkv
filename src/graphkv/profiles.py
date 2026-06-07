@@ -67,6 +67,19 @@ PROFILES: dict[str, GraphKVProfile] = {
             min_outlier_tokens=1,
         ),
     ),
+    "graphkv-qwen7-nf4": GraphKVProfile(
+        name="graphkv-qwen7-nf4",
+        engine="graphkv",
+        description="Tuned local profile for Qwen2.5-7B loaded with NF4 weights.",
+        config=KvQuantConfig(
+            bits=4,
+            group_size=128,
+            residual_length=16,
+            quantizer="affine",
+            key_group_axis="token",
+            value_group_axis="channel",
+        ),
+    ),
     "vllm-fp8": GraphKVProfile(
         name="vllm-fp8",
         engine="vllm",
