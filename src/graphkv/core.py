@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import ceil, sqrt
 from typing import Iterable, Literal, Sequence
 
@@ -20,14 +20,19 @@ class KvQuantConfig:
 
     Expected KV tensor layout is [batch, heads, tokens, head_dim]. The defaults
     follow the robust first-pass pattern from KV-cache papers: quantize keys
-    over token groups and values over channel/head-dim groups, while keeping a
-    recent residual tail in full precision.
+    over token groups and values over channel/head-dim groups, while keeping
+    prompt sink tokens and a recent residual tail in full precision.
     """
 
     bits: int = 4
+    key_bits: int | None = None
+    value_bits: int | None = None
     group_size: int = 64
     residual_length: int = 128
+    sink_length: int = 0
     quantizer: str = "symmetric"
+    long_context_threshold: int | None = None
+    long_context_quantizer: str | None = None
     key_group_axis: str = "token"
     value_group_axis: str = "channel"
     semantic_protection_ratio: float = 0.0
@@ -41,12 +46,25 @@ class KvQuantConfig:
     def validate(self) -> None:
         if self.bits not in {2, 4, 8}:
             raise ValueError("bits must be 2, 4, or 8 for this implementation.")
+        if self.key_bits is not None and self.key_bits not in {2, 4, 8}:
+            raise ValueError("key_bits must be 2, 4, 8, or None.")
+        if self.value_bits is not None and self.value_bits not in {2, 4, 8}:
+            raise ValueError("value_bits must be 2, 4, 8, or None.")
         if self.group_size < 1:
             raise ValueError("group_size must be >= 1.")
         if self.residual_length < 0:
             raise ValueError("residual_length must be >= 0.")
+        if self.sink_length < 0:
+            raise ValueError("sink_length must be >= 0.")
         if self.quantizer not in {"symmetric", "affine"}:
             raise ValueError("quantizer must be 'symmetric' or 'affine'.")
+        if self.long_context_threshold is not None and self.long_context_threshold < 1:
+            raise ValueError("long_context_threshold must be >= 1 or None.")
+        if (
+            self.long_context_quantizer is not None
+            and self.long_context_quantizer not in {"symmetric", "affine"}
+        ):
+            raise ValueError("long_context_quantizer must be 'symmetric', 'affine', or None.")
         if self.key_group_axis not in {"token", "channel"}:
             raise ValueError("key_group_axis must be 'token' or 'channel'.")
         if self.value_group_axis not in {"token", "channel"}:
@@ -435,9 +453,9 @@ def build_retention_mask(
 ) -> torch.Tensor:
     """Return a token mask for full-precision retention.
 
-    The recent residual tail is always retained. Older retained tokens are
-    selected by importance score, which can come from a custom graph-memory
-    model or any other router.
+    The prompt sink and recent residual tail are always retained. Older retained
+    tokens are selected by importance score, which can come from a custom
+    graph-memory model or any other router.
     """
 
     config.validate()
@@ -445,19 +463,23 @@ def build_retention_mask(
         device = importance_scores.device if importance_scores is not None else torch.device("cpu")
 
     mask = torch.zeros(seq_len, dtype=torch.bool, device=device)
+    sink = min(config.sink_length, seq_len)
+    if sink:
+        mask[:sink] = True
+
     residual = min(config.residual_length, seq_len)
     if residual:
         mask[-residual:] = True
 
-    older_len = seq_len - residual
-    if importance_scores is None or older_len <= 0:
+    candidate_mask = ~mask
+    if importance_scores is None or not bool(candidate_mask.any()):
         return mask
 
     scores = _normalize_token_scores(seq_len, importance_scores, device)
     _apply_score_retention(
         mask,
         scores,
-        candidate_len=older_len,
+        candidate_mask=candidate_mask,
         ratio=config.semantic_protection_ratio,
         min_tokens=config.min_protected_tokens,
     )
@@ -483,17 +505,17 @@ def quantize_kv_layer(
     head_dim = 3
     seq_len = keys.size(seq_dim)
     device = keys.device
+    quant_config = _effective_quant_config(config, seq_len)
 
     if retain_mask is None:
         retain_mask = build_retention_mask(seq_len, config, importance_scores, device=device)
         if config.outlier_protection_ratio > 0.0 or config.min_outlier_tokens > 0:
-            residual = min(config.residual_length, seq_len)
-            older_len = seq_len - residual
+            candidate_mask = ~retain_mask
             outlier_scores = _kv_outlier_scores(keys, values)
             _apply_score_retention(
                 retain_mask,
                 outlier_scores,
-                candidate_len=older_len,
+                candidate_mask=candidate_mask,
                 ratio=config.outlier_protection_ratio,
                 min_tokens=config.min_outlier_tokens,
             )
@@ -516,8 +538,10 @@ def quantize_kv_layer(
         value_src = values.index_select(seq_dim, compressed_indices.long()).contiguous()
         key_axis = seq_dim if config.key_group_axis == "token" else head_dim
         value_axis = seq_dim if config.value_group_axis == "token" else head_dim
-        compressed_keys = _quantize_tensor(key_src, config, axis=key_axis)
-        compressed_values = _quantize_tensor(value_src, config, axis=value_axis)
+        key_config = replace(quant_config, bits=quant_config.key_bits or quant_config.bits)
+        value_config = replace(quant_config, bits=quant_config.value_bits or quant_config.bits)
+        compressed_keys = _quantize_tensor(key_src, key_config, axis=key_axis)
+        compressed_values = _quantize_tensor(value_src, value_config, axis=value_axis)
 
     layer = QuantizedKvLayer(
         compressed_keys=compressed_keys,
@@ -669,6 +693,16 @@ def _quantize_tensor(x: torch.Tensor, config: KvQuantConfig, axis: int) -> Quant
     )
 
 
+def _effective_quant_config(config: KvQuantConfig, seq_len: int) -> KvQuantConfig:
+    if (
+        config.long_context_threshold is not None
+        and config.long_context_quantizer is not None
+        and seq_len >= config.long_context_threshold
+    ):
+        return replace(config, quantizer=config.long_context_quantizer)
+    return config
+
+
 def _full_precision_layer(keys: torch.Tensor, values: torch.Tensor, seq_dim: int) -> QuantizedKvLayer:
     empty_indices = torch.empty(0, dtype=torch.int32, device=keys.device)
     empty_shape = list(keys.shape)
@@ -748,15 +782,17 @@ def _apply_score_retention(
     mask: torch.Tensor,
     scores: torch.Tensor,
     *,
-    candidate_len: int,
+    candidate_mask: torch.Tensor,
     ratio: float,
     min_tokens: int,
 ) -> None:
-    keep = min(candidate_len, max(ceil(candidate_len * ratio), min_tokens))
+    candidate_indices = torch.nonzero(candidate_mask, as_tuple=False).flatten()
+    candidate_count = int(candidate_indices.numel())
+    keep = min(candidate_count, max(ceil(candidate_count * ratio), min_tokens))
     if keep <= 0:
         return
-    top = torch.topk(scores[:candidate_len], k=keep, largest=True).indices
-    mask[top] = True
+    top = torch.topk(scores.index_select(0, candidate_indices), k=keep, largest=True).indices
+    mask[candidate_indices.index_select(0, top)] = True
 
 
 def _kv_outlier_scores(keys: torch.Tensor, values: torch.Tensor) -> torch.Tensor:

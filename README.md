@@ -22,13 +22,17 @@ Measured on an NVIDIA GeForce RTX 4070 Ti SUPER with PyTorch CUDA.
 | --- | --- | ---: | ---: | --- |
 | Tiny GPT-2 actual next-token forward | `graphkv-int2-max` | `15,840 / 122,880` | `7.76x` | cosine `0.999949`, top10 `1.00` |
 | Qwen2.5-0.5B actual next-token forward | `graphkv-int4-balanced` | `110,592 / 393,216` | `3.56x` | cosine `0.993159`, top10 `0.90` |
-| Qwen2.5-7B actual next-token forward, NF4 weights, 128-token cache | `graphkv-qwen7-nf4` | `2,618,112 / 7,340,032` | `2.80x` | cosine `0.941118`, top10 `0.80`, argmax match |
-| Codebase-shaped synthetic KV, 16k tokens, 16 layers | `graphkv-int4-balanced` | `286,261,248 / 1,073,741,824` | `3.75x` | attention cosine `0.98845` |
-| Synthetic pressure test, 8k tokens, 16 layers | `graphkv-int2-max` | `73,924,608 / 536,870,912` | `7.26x` | attention cosine `0.78807` |
+| Qwen2.5-7B NF4, 1k-token cache, next-token decode | `graphkv-qwen7-nf4` | `43,352,064 / 58,720,256` | `1.35x` | cosine `0.827394`, top10 `0.80`, argmax match |
+| Qwen2.5-7B NF4, 4k-token cache, next-token decode | `graphkv-qwen7-nf4` | `95,993,856 / 234,881,024` | `2.45x` | cosine `0.830570`, top10 `0.70`, argmax match |
+| Qwen2.5-7B NF4, 16k-token cache, next-token decode | `graphkv-qwen7-nf4` | `292,454,400 / 939,524,096` | `3.21x` | cosine `0.998599`, top10 `1.00`, argmax match |
+| Qwen2.5-7B NF4, 32k-token cache, next-token decode | `graphkv-qwen7-nf4` | `558,530,560 / 1,879,048,192` | `3.36x` | cosine `0.990316`, top10 `1.00`, argmax match |
+| Qwen2.5-7B NF4, 128k-token cache attempt | `graphkv-qwen7-nf4` | not completed | not claimed | CUDA OOM on the local 16 GB GPU; no fallback number claimed |
 
-Read the numbers as profile guidance: `graphkv-int4-balanced` is the current
-default for fidelity, while `graphkv-int2-max` is a memory pressure profile that
-needs stronger graph retention or model-specific tuning for harder workloads.
+The Qwen2.5-7B runs use real chunked prefill, then compare a one-token decode
+from the original KV cache against the GraphKV-compressed cache exported back to
+Hugging Face `DynamicCache`. `graphkv-qwen7-nf4` keeps a 128-token prompt sink
+and 512-token recent tail, uses affine int4 below 8k tokens, and switches to
+symmetric int4 for longer caches.
 
 ## Bundled Graph Model
 
@@ -58,23 +62,17 @@ scores = model.score(query, candidates)
 ## Qwen 7B NF4 Comparison
 
 Local GraphKV and TurboQuant runs used `Qwen/Qwen2.5-7B` loaded with
-bitsandbytes NF4 weights on the RTX 4070 Ti SUPER. KVarN was installed and run
-through WSL with its vLLM fork; Qwen2.5-7B loaded, but its grouped-query ratio
-(`28 / 4 = 7`) hit KVarN's Triton decode kernel requirement that the query
-heads per KV head be a power of two. A compatible Qwen3-8B KVarN run completed.
+bitsandbytes NF4 weights on the RTX 4070 Ti SUPER. The table only lists local
+runs with fidelity metrics.
 
 | System | Benchmark status | Model/setup | Result |
 | --- | --- | --- | --- |
-| GraphKV | Local Windows run | Qwen2.5-7B NF4, 128-token cache, next-token logits | `2.8036x` KV compression, cosine `0.941118`, top10 `0.80`, argmax match |
+| GraphKV | Local Windows run | Qwen2.5-7B NF4, 32k-token cache, next-token decode | `3.36x` KV compression, cosine `0.990316`, top10 `1.00`, argmax match |
+| GraphKV | Local Windows run | Qwen2.5-7B NF4, 16k-token cache, next-token decode | `3.21x` KV compression, cosine `0.998599`, top10 `1.00`, argmax match |
 | TurboQuant K4/V3 | Local source run | Qwen2.5-7B NF4, HF `DynamicCache` wrapper, 128-token cache | `2.56x` KV compression, cosine `0.542925`, top10 `0.10`, argmax changed |
 | TurboQuant K4/V4 | Local source run | Qwen2.5-7B NF4, HF `DynamicCache` wrapper, 128-token cache | `3.76x` KV compression, cosine `0.564340`, top10 `0.20`, argmax changed |
-| TurboQuant calculator | Local formula check | Qwen2.5-7B config at 128k context | FP16 `7.00 GiB`, TQ 3-bit `1.31 GiB` |
-| KVarN Qwen2.5-7B | Local WSL load and compile test | Qwen2.5-7B NF4, `kvarn_k4v2_g128` | Model loaded and KVarN backend selected; decode failed on non-power-of-two GQA ratio. At 128 tokens the effective ratio is `1.00x` because `sink_tokens=128`; at 128k context the estimate is `4.72x` (`1.482 GiB` effective vs `7.00 GiB` FP16). |
-| KVarN Qwen3-8B | Local WSL generation run | Qwen3-8B NF4, `kvarn_k4v2_g128`, 341-token prompt | Generation completed; model load used `5.97 GiB`, KVarN tail pool reserved `1.12 GiB`, GPU KV cache capacity was `222,336` tokens at `max_model_len=384`. |
 
-External context: [vLLM TurboQuant study](https://vllm.ai/blog/2026-05-11-turboquant),
-[TurboQuant Qwen2.5-7B calculator](https://turbo-quant.com/kv-cache-calculator),
-and [KVarN upstream](https://github.com/huawei-csl/KVarN).
+External context: [vLLM TurboQuant study](https://vllm.ai/blog/2026-05-11-turboquant).
 
 ## Install
 
@@ -120,8 +118,9 @@ GraphKV tensor profiles:
 
 - `graphkv-int2-max`: aggressive 2-bit affine packing.
 - `graphkv-int4-balanced`: 4-bit symmetric, tuned for grouped-query models.
-- `graphkv-int4-safe`: 4-bit with residual tail and outlier retention.
-- `graphkv-qwen7-nf4`: Qwen2.5-7B NF4 local profile, tuned for fidelity.
+- `graphkv-int4-safe`: 4-bit with sink/tail retention and outlier retention.
+- `graphkv-qwen7-nf4`: Qwen2.5-7B NF4 local profile with sink/tail retention
+  and an adaptive affine-to-symmetric long-context switch.
 
 Native engine recipes:
 
@@ -171,9 +170,9 @@ Use `llamacpp-q4` for a more aggressive native llama.cpp cache.
 
 The current public push includes the custom GraphKV compression core, package
 metadata under `heterodoxin`, Transformers cache adapters, vLLM and llama.cpp
-native recipe helpers, bundled graph model weights, README statistics, badges,
-and GitHub Actions CI. Plain `.txt` files are ignored by default and were not
-included in the repository.
+native recipe helpers, bundled graph model weights, real-model README
+statistics, badges, and GitHub Actions CI. Plain `.txt` files are ignored by
+default and were not included in the repository.
 
 ## Why These Axes?
 
