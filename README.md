@@ -112,25 +112,26 @@ reduced top10 quality.
 Local GraphKV and TurboQuant runs used `Qwen/Qwen2.5-7B` loaded with
 bitsandbytes NF4 weights on the RTX 4070 Ti SUPER. Each row uses the same
 code-shaped prompt length and compares one-token decode logits against an
-uncompressed baseline. TurboQuant rows use the local source
-`CompressedDynamicCache`; its byte counts are the wrapper-reported compressed
-KV storage, matching the cache-storage accounting used for GraphKV.
+uncompressed baseline. TurboQuant rows use the local
+[`0xSero/turboquant`](https://github.com/0xSero/turboquant) source,
+`TurboQuantKVCache`, exported back to Hugging Face `DynamicCache`. Its byte
+counts are the compressed KV storage reported by that implementation, matching
+the cache-storage accounting used for GraphKV.
 
 | System | Cache length | Cache bytes | Compression | Fidelity |
 | --- | ---: | ---: | ---: | --- |
-| GraphKV `graphkv-qwen7-nf4` | 1k | `43,352,064 / 58,720,256` | `1.35x` | cosine `0.827394`, top10 `0.80`, argmax match |
-| TurboQuant K4/V4 | 1k | `15,597,568 / 58,720,256` | `3.76x` | cosine `-0.393062`, top10 `0.50`, argmax match |
-| TurboQuant K4/V3 | 1k | `22,937,600 / 58,720,256` | `2.56x` | cosine `-0.124455`, top10 `0.50`, argmax changed |
-| GraphKV `graphkv-qwen7-nf4` | 4k | `95,993,856 / 234,881,024` | `2.45x` | cosine `0.830570`, top10 `0.70`, argmax match |
-| TurboQuant K4/V4 | 4k | `62,390,272 / 234,881,024` | `3.76x` | cosine `-0.209976`, top10 `0.20`, argmax changed |
-| TurboQuant K4/V3 | 4k | `91,750,400 / 234,881,024` | `2.56x` | cosine `-0.192223`, top10 `0.20`, argmax changed |
-| GraphKV `graphkv` | 16k | `255,437,952 / 939,524,096` | `3.68x` | cosine `0.999018`, top10 `0.90`, argmax match |
-| GraphKV `graphkv-qwen7-nf4` | 16k | `292,454,400 / 939,524,096` | `3.21x` | cosine `0.998599`, top10 `1.00`, argmax match |
-| TurboQuant K4/V4 | 16k | `249,561,088 / 939,524,096` | `3.76x` | cosine `0.657976`, top10 `0.10`, argmax changed |
-| TurboQuant K4/V3 | 16k | `367,001,600 / 939,524,096` | `2.56x` | cosine `0.649364`, top10 `0.10`, argmax changed |
-| GraphKV `graphkv-qwen7-nf4` | 32k | `558,530,560 / 1,879,048,192` | `3.36x` | cosine `0.990316`, top10 `1.00`, argmax match |
-| TurboQuant K4/V4 | 32k | `499,122,176 / 1,879,048,192` | `3.76x` | cosine `-0.401509`, top10 `0.10`, argmax changed |
-| TurboQuant K4/V3 | 32k | `734,003,200 / 1,879,048,192` | `2.56x` | cosine `-0.472464`, top10 `0.10`, argmax changed |
+| GraphKV `graphkv` | 1k | `32,169,984 / 58,720,256` | `1.83x` | cosine `0.970028`, top10 `0.70`, argmax changed |
+| TurboQuant K4/V4 | 1k | `23,797,760 / 58,720,256` | `2.47x` | cosine `0.889642`, top10 `0.20`, argmax changed |
+| TurboQuant K3/V2 | 1k | `17,375,232 / 58,720,256` | `3.38x` | cosine `0.888312`, top10 `0.10`, argmax changed |
+| GraphKV `graphkv` | 4k | `80,683,008 / 234,881,024` | `2.91x` | cosine `0.951403`, top10 `0.70`, argmax match |
+| TurboQuant K4/V4 | 4k | `80,224,256 / 234,881,024` | `2.93x` | cosine `0.719567`, top10 `0.00`, argmax changed |
+| TurboQuant K3/V2 | 4k | `51,781,632 / 234,881,024` | `4.54x` | cosine `0.868416`, top10 `0.30`, argmax changed |
+| GraphKV `graphkv` | 16k | `255,437,952 / 939,524,096` | `3.68x` | cosine `0.948294`, top10 `0.80`, argmax changed |
+| TurboQuant K4/V4 | 16k | `305,930,240 / 939,524,096` | `3.07x` | cosine `0.940517`, top10 `0.80`, argmax changed |
+| TurboQuant K3/V2 | 16k | `189,407,232 / 939,524,096` | `4.96x` | cosine `0.920215`, top10 `0.40`, argmax changed |
+| GraphKV `graphkv` | 32k | `498,994,048 / 1,879,048,192` | `3.77x` | cosine `0.986546`, top10 `0.80`, argmax match |
+| TurboQuant K4/V4 | 32k | `606,871,552 / 1,879,048,192` | `3.10x` | cosine `0.889547`, top10 `0.00`, argmax changed |
+| TurboQuant K3/V2 | 32k | `372,908,032 / 1,879,048,192` | `5.04x` | cosine `0.905440`, top10 `0.00`, argmax changed |
 
 External context: [vLLM TurboQuant study](https://vllm.ai/blog/2026-05-11-turboquant).
 
