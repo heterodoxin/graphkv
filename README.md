@@ -1,14 +1,28 @@
 # GraphKV
 
-GraphKV is a small, publishable toolkit for graph-guided low-bit KV cache
-compression. It started as a custom cache path for Mneme-style context routing:
-keep recent, salient, or graph-relevant tokens high precision, and compress the
-rest aggressively.
+GraphKV is a custom graph-memory KV cache system for low-bit transformer
+inference. It keeps recent, salient, or graph-relevant tokens high precision,
+then compresses the rest aggressively with packed int2/int4 cache tensors.
 
 Current status: alpha. The Python implementation is correctness-first and works
 with Hugging Face/Transformers cache objects. vLLM and llama.cpp support is
 provided as native engine recipes today, because custom GraphKV int2/int4
 execution inside those engines requires their attention/cache kernel paths.
+
+## Local Results
+
+Measured on an NVIDIA GeForce RTX 4070 Ti SUPER with PyTorch CUDA.
+
+| Test | Profile | Cache bytes | Compression | Quality |
+| --- | --- | ---: | ---: | --- |
+| Tiny GPT-2 actual next-token forward | `graphkv-int2-max` | `15,840 / 122,880` | `7.76x` | cosine `0.999949`, top10 `1.00` |
+| Qwen2.5-0.5B actual next-token forward | `graphkv-int4-balanced` | `110,592 / 393,216` | `3.56x` | cosine `0.993159`, top10 `0.90` |
+| Codebase-shaped synthetic KV, 16k tokens, 16 layers | `graphkv-int4-balanced` | `286,261,248 / 1,073,741,824` | `3.75x` | attention cosine `0.98845` |
+| Synthetic pressure test, 8k tokens, 16 layers | `graphkv-int2-max` | `73,924,608 / 536,870,912` | `7.26x` | attention cosine `0.78807` |
+
+Read the numbers as profile guidance: `graphkv-int4-balanced` is the current
+default for fidelity, while `graphkv-int2-max` is a memory pressure profile that
+needs stronger graph retention or model-specific tuning for harder workloads.
 
 ## Install
 
@@ -114,13 +128,19 @@ Estimate context size from a codebase, then benchmark a capped synthetic KV cach
 graphkv-benchmark --scan-dir /path/to/big/repo --cap-tokens 32768
 ```
 
+## Latest Push
+
+The current public push includes the custom GraphKV compression core, package
+metadata under `heterodoxin`, Transformers cache adapters, vLLM and llama.cpp
+native recipe helpers, benchmarks, examples, tests, and GitHub Actions CI. Plain
+`.txt` files are ignored by default and were not included in the repository.
+
 ## Why These Axes?
 
-GraphKV follows the practical KIVI-style observation that keys and values prefer
-different grouping: keys are grouped over token blocks so each channel gets its
-own scale over time, while values are grouped over channels for per-token scales.
-This repository also exposes retention hooks for semantic or graph-derived token
-importance scores.
+GraphKV uses custom graph-memory retention plus asymmetric KV grouping: keys are
+grouped over token blocks so each channel gets its own scale over time, while
+values are grouped over channels for per-token scales. The package exposes
+retention hooks for semantic or graph-derived token importance scores.
 
 Useful references:
 
@@ -132,8 +152,6 @@ Useful references:
 
 ## Publishing Checklist
 
-- Update `project.urls` in `pyproject.toml`.
-- Replace the placeholder author if desired.
 - Run `python -m unittest discover -s tests -v`.
 - Run at least one benchmark on the target GPU.
 - Tag a release, then publish with `python -m build` and `twine upload dist/*`.

@@ -436,8 +436,8 @@ def build_retention_mask(
     """Return a token mask for full-precision retention.
 
     The recent residual tail is always retained. Older retained tokens are
-    selected by importance score, which can come from Mneme-Graph retrieval or
-    any other router.
+    selected by importance score, which can come from a custom graph-memory
+    model or any other router.
     """
 
     config.validate()
