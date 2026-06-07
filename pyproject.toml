@@ -30,19 +30,14 @@ dependencies = [
 
 [project.optional-dependencies]
 transformers = ["transformers>=4.44"]
-dev = ["pytest>=8", "transformers>=4.44"]
+dev = ["transformers>=4.44"]
 
 [project.urls]
 Homepage = "https://github.com/heterodoxin/graphkv"
 Issues = "https://github.com/heterodoxin/graphkv/issues"
 
 [project.scripts]
-graphkv-benchmark = "graphkv.benchmark:main"
 graphkv-recipes = "graphkv.integrations:main"
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100

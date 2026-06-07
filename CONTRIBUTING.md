@@ -5,8 +5,9 @@ GraphKV is alpha. Keep changes measurable and easy to test.
 ## Local Setup
 
 ```bash
-pip install -e ".[dev]"
-python -m unittest discover -s tests -v
+pip install -e .
+python -c "import graphkv; print(graphkv.__version__)"
+graphkv-recipes --profile llamacpp-q8 --model model.gguf
 ```
 
 ## Good First Areas
@@ -15,7 +16,7 @@ python -m unittest discover -s tests -v
 - Better retention policies for graph/chunk importance scores.
 - vLLM packed-cache backend experiments.
 - llama.cpp/ggml packed-cache experiments.
-- Long-context benchmarks with real prompts.
+- Long-context measurements that can be summarized in the README.
 
 ## Design Rule
 

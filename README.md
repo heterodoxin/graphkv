@@ -30,7 +30,7 @@ needs stronger graph retention or model-specific tuning for harder workloads.
 pip install -e .
 ```
 
-For Hugging Face model tests:
+For Hugging Face/Transformers adapters:
 
 ```bash
 pip install -e ".[transformers]"
@@ -114,26 +114,12 @@ That prints a command with:
 
 Use `llamacpp-q4` for a more aggressive native llama.cpp cache.
 
-## Benchmark
-
-Synthetic KV benchmark:
-
-```bash
-graphkv-benchmark --profile graphkv-int4-balanced --tokens 8192 --layers 32 --heads 8 --head-dim 128
-```
-
-Estimate context size from a codebase, then benchmark a capped synthetic KV cache:
-
-```bash
-graphkv-benchmark --scan-dir /path/to/big/repo --cap-tokens 32768
-```
-
 ## Latest Push
 
 The current public push includes the custom GraphKV compression core, package
 metadata under `heterodoxin`, Transformers cache adapters, vLLM and llama.cpp
-native recipe helpers, benchmarks, examples, tests, and GitHub Actions CI. Plain
-`.txt` files are ignored by default and were not included in the repository.
+native recipe helpers, README statistics, and GitHub Actions CI. Plain `.txt`
+files are ignored by default and were not included in the repository.
 
 ## Why These Axes?
 
@@ -152,6 +138,6 @@ Useful references:
 
 ## Publishing Checklist
 
-- Run `python -m unittest discover -s tests -v`.
-- Run at least one benchmark on the target GPU.
+- Run `python -c "import graphkv; print(graphkv.__version__)"`.
+- Run `graphkv-recipes --profile llamacpp-q8 --model model.gguf`.
 - Tag a release, then publish with `python -m build` and `twine upload dist/*`.
