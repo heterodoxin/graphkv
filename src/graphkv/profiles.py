@@ -82,6 +82,8 @@ PROFILES: dict[str, GraphKVProfile] = {
             long_context_quantizer="symmetric",
             key_group_axis="token",
             value_group_axis="channel",
+            semantic_protection_ratio=0.02,
+            semantic_protection_min_context=8192,
         ),
     ),
     "vllm-fp8": GraphKVProfile(

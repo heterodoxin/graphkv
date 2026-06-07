@@ -71,7 +71,7 @@ importance_scores = build_graph_mneme_token_scores(
 
 compressed_cache = quantize_hf_cache(
     past_key_values,
-    profile="graphkv-int4-safe",
+    profile="graphkv-qwen7-nf4",
     importance_scores=importance_scores,
     output="compressed",
 )
@@ -81,6 +81,24 @@ print(compressed_cache.stats())
 The bundled model card records `0.54` MRR on WikiKG2 with
 `num_global_relations=0`. GraphKV uses that graph-ranking signal to protect
 semantically important token spans before low-bit KV packing.
+
+## Graph Mneme Retest
+
+After adding the Graph Mneme retention API, GraphKV was retested locally on
+`Qwen/Qwen2.5-7B` NF4 with a 16k-token code-shaped prompt. The target code span
+was placed in the middle of the cache, outside the prompt sink and recent tail,
+and Graph Mneme ranked the target chunks first. The calibrated policy keeps 2%
+of graph-ranked candidate tokens only at 8k+ context lengths.
+
+| Setup | Cache length | Cache bytes | Compression | Fidelity |
+| --- | ---: | ---: | ---: | --- |
+| GraphKV plain `graphkv-qwen7-nf4` | 16k | `292,454,400 / 939,524,096` | `3.21x` | cosine `0.979474`, top10 `0.80`, argmax match |
+| GraphKV + Graph Mneme retention | 16k | `305,655,168 / 939,524,096` | `3.07x` | cosine `0.999789`, top10 `1.00`, argmax match |
+
+The same sweep rejected an aggressive 6% plus 128-token minimum graph-retention
+policy at 16k because it over-retained, dropped cosine to `0.906118`, and
+changed argmax. The default Qwen NF4 profile therefore uses the calibrated 2%
+long-context graph policy when importance scores are supplied.
 
 ## Qwen 7B NF4 Comparison
 
@@ -154,7 +172,8 @@ GraphKV tensor profiles:
 - `graphkv-int4-balanced`: 4-bit symmetric, tuned for grouped-query models.
 - `graphkv-int4-safe`: 4-bit with sink/tail retention and outlier retention.
 - `graphkv-qwen7-nf4`: Qwen2.5-7B NF4 local profile with sink/tail retention
-  and an adaptive affine-to-symmetric long-context switch.
+  an adaptive affine-to-symmetric long-context switch, and calibrated Graph
+  Mneme retention above 8k tokens when importance scores are supplied.
 
 Native engine recipes:
 

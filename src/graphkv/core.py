@@ -37,6 +37,7 @@ class KvQuantConfig:
     value_group_axis: str = "channel"
     semantic_protection_ratio: float = 0.0
     min_protected_tokens: int = 0
+    semantic_protection_min_context: int = 0
     outlier_protection_ratio: float = 0.0
     min_outlier_tokens: int = 0
     pack_int4: bool = True
@@ -73,6 +74,8 @@ class KvQuantConfig:
             raise ValueError("semantic_protection_ratio must be in [0, 1].")
         if self.min_protected_tokens < 0:
             raise ValueError("min_protected_tokens must be >= 0.")
+        if self.semantic_protection_min_context < 0:
+            raise ValueError("semantic_protection_min_context must be >= 0.")
         if not 0.0 <= self.outlier_protection_ratio <= 1.0:
             raise ValueError("outlier_protection_ratio must be in [0, 1].")
         if self.min_outlier_tokens < 0:
@@ -517,7 +520,11 @@ def build_retention_mask(
         mask[-residual:] = True
 
     candidate_mask = ~mask
-    if importance_scores is None or not bool(candidate_mask.any()):
+    if (
+        importance_scores is None
+        or seq_len < config.semantic_protection_min_context
+        or not bool(candidate_mask.any())
+    ):
         return mask
 
     scores = _normalize_token_scores(seq_len, importance_scores, device)
