@@ -25,6 +25,7 @@ Measured on an NVIDIA GeForce RTX 4070 Ti SUPER with PyTorch CUDA.
 | Qwen2.5-7B NF4, 1k-token cache, next-token decode | `graphkv-qwen7-nf4` | `43,352,064 / 58,720,256` | `1.35x` | cosine `0.827394`, top10 `0.80`, argmax match |
 | Qwen2.5-7B NF4, 4k-token cache, next-token decode | `graphkv-qwen7-nf4` | `95,993,856 / 234,881,024` | `2.45x` | cosine `0.830570`, top10 `0.70`, argmax match |
 | Qwen2.5-7B NF4, 16k-token cache, next-token decode | `graphkv-qwen7-nf4` | `292,454,400 / 939,524,096` | `3.21x` | cosine `0.998599`, top10 `1.00`, argmax match |
+| Qwen2.5-7B NF4, 16k-token Graph Mneme retest | `graphkv-mneme` | `305,655,168 / 939,524,096` | `3.07x` | cosine `0.999789`, top10 `1.00`, argmax match |
 | Qwen2.5-7B NF4, 32k-token cache, next-token decode | `graphkv-qwen7-nf4` | `558,530,560 / 1,879,048,192` | `3.36x` | cosine `0.990316`, top10 `1.00`, argmax match |
 
 The Qwen2.5-7B runs use real chunked prefill, then compare a one-token decode
@@ -47,18 +48,15 @@ the old local `rustembed` folder to load the graph model:
 
 ```python
 from graphkv import (
+    GraphMnemeRequest,
     GraphRetentionChunk,
-    build_graph_mneme_token_scores,
     bundled_graph_model_metadata,
-    load_bundled_graph_model,
     quantize_hf_cache,
 )
 
-model = load_bundled_graph_model(device="auto")
 print(bundled_graph_model_metadata()["eval_metrics"]["wikikg2"])
 
-importance_scores = build_graph_mneme_token_scores(
-    seq_len=input_ids.shape[-1],
+graph_memory = GraphMnemeRequest(
     query_anchor=0,
     query_relation=7,
     query_facts=[(0, 7, 1), (1, 9, 2)],
@@ -66,13 +64,11 @@ importance_scores = build_graph_mneme_token_scores(
         GraphRetentionChunk(anchor=1, span=(0, 256), facts=[(1, 7, 3), (3, 9, 4)]),
         GraphRetentionChunk(anchor=2, span=(256, 512), facts=[(2, 4, 5), (5, 6, 6)]),
     ],
-    model=model,
 )
 
 compressed_cache = quantize_hf_cache(
     past_key_values,
-    profile="graphkv-qwen7-nf4",
-    importance_scores=importance_scores,
+    graph_mneme=graph_memory,
     output="compressed",
 )
 print(compressed_cache.stats())
@@ -97,8 +93,9 @@ of graph-ranked candidate tokens only at 8k+ context lengths.
 
 The same sweep rejected an aggressive 6% plus 128-token minimum graph-retention
 policy at 16k because it over-retained, dropped cosine to `0.906118`, and
-changed argmax. The default Qwen NF4 profile therefore uses the calibrated 2%
-long-context graph policy when importance scores are supplied.
+changed argmax. The default `graphkv-mneme` profile therefore uses the
+calibrated 2% long-context graph policy when Graph Mneme chunks or importance
+scores are supplied.
 
 ## Qwen 7B NF4 Comparison
 
@@ -146,7 +143,6 @@ from graphkv import quantize_hf_cache
 # past_key_values from a Hugging Face model forward pass
 compressed_cache = quantize_hf_cache(
     past_key_values,
-    profile="graphkv-int4-balanced",
     output="dynamic",
     model_config=model.config,
 )
@@ -168,12 +164,14 @@ print(cache.compression_ratio())
 
 GraphKV tensor profiles:
 
+- `graphkv-mneme`: default Graph Mneme-guided profile, tuned for long-context
+  fidelity with a 128-token sink, 512-token tail, and calibrated graph retention
+  above 8k tokens when graph memory is supplied.
 - `graphkv-int2-max`: aggressive 2-bit affine packing.
 - `graphkv-int4-balanced`: 4-bit symmetric, tuned for grouped-query models.
 - `graphkv-int4-safe`: 4-bit with sink/tail retention and outlier retention.
-- `graphkv-qwen7-nf4`: Qwen2.5-7B NF4 local profile with sink/tail retention
-  an adaptive affine-to-symmetric long-context switch, and calibrated Graph
-  Mneme retention above 8k tokens when importance scores are supplied.
+- `graphkv-qwen7-nf4`: alias of `graphkv-mneme`, tuned locally on
+  Qwen2.5-7B NF4.
 
 Native engine recipes:
 

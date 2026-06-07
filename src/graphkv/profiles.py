@@ -9,6 +9,21 @@ from .core import KvQuantConfig
 Engine = Literal["graphkv", "vllm", "llama.cpp"]
 
 
+MNEME_DEFAULT_CONFIG = KvQuantConfig(
+    bits=4,
+    group_size=32,
+    residual_length=512,
+    sink_length=128,
+    quantizer="affine",
+    long_context_threshold=8192,
+    long_context_quantizer="symmetric",
+    key_group_axis="token",
+    value_group_axis="channel",
+    semantic_protection_ratio=0.02,
+    semantic_protection_min_context=8192,
+)
+
+
 @dataclass(frozen=True)
 class GraphKVProfile:
     name: str
@@ -26,6 +41,12 @@ class GraphKVProfile:
 
 
 PROFILES: dict[str, GraphKVProfile] = {
+    "graphkv-mneme": GraphKVProfile(
+        name="graphkv-mneme",
+        engine="graphkv",
+        description="Default Graph Mneme-guided profile for long-context fidelity.",
+        config=MNEME_DEFAULT_CONFIG,
+    ),
     "graphkv-int2-max": GraphKVProfile(
         name="graphkv-int2-max",
         engine="graphkv",
@@ -71,20 +92,8 @@ PROFILES: dict[str, GraphKVProfile] = {
     "graphkv-qwen7-nf4": GraphKVProfile(
         name="graphkv-qwen7-nf4",
         engine="graphkv",
-        description="Tuned local profile for Qwen2.5-7B loaded with NF4 weights.",
-        config=KvQuantConfig(
-            bits=4,
-            group_size=32,
-            residual_length=512,
-            sink_length=128,
-            quantizer="affine",
-            long_context_threshold=8192,
-            long_context_quantizer="symmetric",
-            key_group_axis="token",
-            value_group_axis="channel",
-            semantic_protection_ratio=0.02,
-            semantic_protection_min_context=8192,
-        ),
+        description="Alias of graphkv-mneme, tuned locally on Qwen2.5-7B NF4.",
+        config=MNEME_DEFAULT_CONFIG,
     ),
     "vllm-fp8": GraphKVProfile(
         name="vllm-fp8",

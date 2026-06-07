@@ -4,15 +4,19 @@ import argparse
 import shlex
 from typing import Iterable
 
-from .core import QuantizedKvCache
+from .core import QuantizedKvCache, hf_cache_to_tuple
+from .graph_model import GraphMemory17L, GraphMnemeRequest, graph_mneme_request_token_scores
 from .profiles import GraphKVProfile, get_profile, list_profiles
 
 
 def quantize_hf_cache(
     past_key_values: object,
-    profile: str | GraphKVProfile = "graphkv-int4-balanced",
+    profile: str | GraphKVProfile = "graphkv-mneme",
     *,
     importance_scores=None,
+    graph_mneme: GraphMnemeRequest | None = None,
+    graph_mneme_model: GraphMemory17L | None = None,
+    graph_mneme_device: str = "cpu",
     output: str = "dynamic",
     model_config: object | None = None,
     max_cache_len: int | None = None,
@@ -23,11 +27,22 @@ def quantize_hf_cache(
     `sliding_window`. The exported HF cache is correctness-first: it dequantizes
     before returning to the engine. For real speedups, use GraphKV's packed cache
     directly or add fused low-bit attention kernels.
+
+    When `graph_mneme` is supplied, GraphKV loads/scores the bundled Graph Mneme
+    model and uses those scores as token-retention importance. Explicit
+    `importance_scores` take precedence over `graph_mneme`.
     """
 
     selected = get_profile(profile)
     if selected.config is None:
         raise ValueError(f"Profile {selected.name!r} is an engine-native recipe, not a GraphKV profile.")
+    if importance_scores is None and graph_mneme is not None:
+        importance_scores = graph_mneme_request_token_scores(
+            _hf_cache_seq_len(past_key_values),
+            graph_mneme,
+            model=graph_mneme_model,
+            device=graph_mneme_device,
+        )
     compressed = QuantizedKvCache.from_hf_cache(
         past_key_values,
         selected.config,
@@ -36,6 +51,13 @@ def quantize_hf_cache(
     if output == "compressed":
         return compressed
     return compressed.to_hf_cache(output, config=model_config, max_cache_len=max_cache_len)
+
+
+def _hf_cache_seq_len(past_key_values: object) -> int:
+    layers = hf_cache_to_tuple(past_key_values)
+    if not layers:
+        raise ValueError("past_key_values must contain at least one non-empty KV layer.")
+    return int(layers[0][0].shape[2])
 
 
 def vllm_kwargs(
