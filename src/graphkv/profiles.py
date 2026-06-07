@@ -24,8 +24,12 @@ GRAPHKV_DEFAULT_CONFIG = KvQuantConfig(
     semantic_residual_length=128,
     semantic_residual_min_context=8192,
     low_priority_ratio=0.25,
+    long_low_priority_ratio=0.35,
+    long_low_priority_min_context=32768,
     low_priority_min_context=8192,
     low_priority_value_bits=2,
+    low_priority_value_rotation="hadamard",
+    low_priority_value_rotation_min_context=32768,
 )
 
 

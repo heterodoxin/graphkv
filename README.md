@@ -27,6 +27,7 @@ Measured on an NVIDIA GeForce RTX 4070 Ti SUPER with PyTorch CUDA.
 | Qwen2.5-7B NF4, 16k-token cache, next-token decode | `graphkv-qwen7-nf4` | `292,454,400 / 939,524,096` | `3.21x` | cosine `0.998599`, top10 `1.00`, argmax match |
 | Qwen2.5-7B NF4, 16k-token Mneme semantic-tail retest | `graphkv` | `255,437,952 / 939,524,096` | `3.68x` | cosine `0.999018`, top10 `0.90`, argmax match |
 | Qwen2.5-7B NF4, 32k-token cache, next-token decode | `graphkv-qwen7-nf4` | `558,530,560 / 1,879,048,192` | `3.36x` | cosine `0.990316`, top10 `1.00`, argmax match |
+| Qwen2.5-7B NF4, 32k-token rotated cold-tier retest | `graphkv` | `487,457,152 / 1,879,048,192` | `3.85x` | cosine `0.998487`, top10 `0.90`, argmax match |
 
 The Qwen2.5-7B runs use real chunked prefill, then compare a one-token decode
 from the original KV cache against the GraphKV-compressed cache exported back to
@@ -103,9 +104,10 @@ policy at 16k because it over-retained, dropped cosine to `0.906118`, and
 changed argmax. The default `graphkv` profile uses the calibrated 1%
 long-context graph policy when graph memory or importance scores are supplied.
 It also uses Mneme to identify the least relevant compressed tokens for the
-2-bit value tier. A 30% cold-tier sweep reached `3.73x`, but the default stays
-at 25% for the stronger fidelity margin; pushing that tier to 35% or higher
-reduced top10 quality.
+2-bit value tier. At 16k, the default stays at 25% for the stronger fidelity
+margin. At 32k and beyond, GraphKV switches to a 35% cold tier and Hadamard
+rotates those cold value vectors before packing; the 32k retest reached `3.85x`
+with cosine `0.998487`, top10 `0.90`, and argmax match.
 
 ## Qwen 7B NF4 Comparison
 
@@ -129,9 +131,9 @@ the cache-storage accounting used for GraphKV.
 | GraphKV `graphkv` | 16k | `255,437,952 / 939,524,096` | `3.68x` | cosine `0.948294`, top10 `0.80`, argmax changed |
 | TurboQuant K4/V4 | 16k | `305,930,240 / 939,524,096` | `3.07x` | cosine `0.940517`, top10 `0.80`, argmax changed |
 | TurboQuant K3/V2 | 16k | `189,407,232 / 939,524,096` | `4.96x` | cosine `0.920215`, top10 `0.40`, argmax changed |
-| GraphKV `graphkv` | 32k | `498,994,048 / 1,879,048,192` | `3.77x` | cosine `0.986546`, top10 `0.80`, argmax match |
-| TurboQuant K4/V4 | 32k | `606,871,552 / 1,879,048,192` | `3.10x` | cosine `0.889547`, top10 `0.00`, argmax changed |
-| TurboQuant K3/V2 | 32k | `372,908,032 / 1,879,048,192` | `5.04x` | cosine `0.905440`, top10 `0.00`, argmax changed |
+| GraphKV `graphkv` | 32k | `487,457,152 / 1,879,048,192` | `3.85x` | cosine `0.998487`, top10 `0.90`, argmax match |
+| TurboQuant K4/V4 | 32k | `606,871,552 / 1,879,048,192` | `3.10x` | cosine `0.876170`, top10 `0.00`, argmax changed |
+| TurboQuant K3/V2 | 32k | `372,908,032 / 1,879,048,192` | `5.04x` | cosine `0.915478`, top10 `0.20`, argmax changed |
 
 External context: [vLLM TurboQuant study](https://vllm.ai/blog/2026-05-11-turboquant).
 
@@ -181,7 +183,8 @@ GraphKV tensor profiles:
   semantic tail, 64-token quant groups, and calibrated graph retention above 8k
   tokens when graph memory is supplied.
   Mneme also routes the lowest-priority 25% of compressed long-context tokens
-  into 2-bit value storage for extra compression.
+  into 2-bit value storage for extra compression, then raises that cold tier to
+  35% at 32k+ with Hadamard-rotated cold values.
 - `graphkv-int2-max`: aggressive 2-bit affine packing.
 - `graphkv-int4-balanced`: 4-bit symmetric, tuned for grouped-query models.
 - `graphkv-int4-safe`: 4-bit with sink/tail retention and outlier retention.

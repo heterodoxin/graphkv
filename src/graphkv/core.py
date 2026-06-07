@@ -41,11 +41,16 @@ class KvQuantConfig:
     semantic_residual_length: int | None = None
     semantic_residual_min_context: int = 0
     low_priority_ratio: float = 0.0
+    long_low_priority_ratio: float | None = None
+    long_low_priority_min_context: int = 0
     min_low_priority_tokens: int = 0
     low_priority_min_context: int = 0
     low_priority_bits: int | None = None
     low_priority_key_bits: int | None = None
     low_priority_value_bits: int | None = None
+    rotation: str = "none"
+    low_priority_value_rotation: str | None = None
+    low_priority_value_rotation_min_context: int = 0
     outlier_protection_ratio: float = 0.0
     min_outlier_tokens: int = 0
     pack_int4: bool = True
@@ -90,6 +95,13 @@ class KvQuantConfig:
             raise ValueError("semantic_residual_min_context must be >= 0.")
         if not 0.0 <= self.low_priority_ratio <= 1.0:
             raise ValueError("low_priority_ratio must be in [0, 1].")
+        if (
+            self.long_low_priority_ratio is not None
+            and not 0.0 <= self.long_low_priority_ratio <= 1.0
+        ):
+            raise ValueError("long_low_priority_ratio must be in [0, 1] or None.")
+        if self.long_low_priority_min_context < 0:
+            raise ValueError("long_low_priority_min_context must be >= 0.")
         if self.min_low_priority_tokens < 0:
             raise ValueError("min_low_priority_tokens must be >= 0.")
         if self.low_priority_min_context < 0:
@@ -100,6 +112,15 @@ class KvQuantConfig:
             raise ValueError("low_priority_key_bits must be 2, 4, 8, or None.")
         if self.low_priority_value_bits is not None and self.low_priority_value_bits not in {2, 4, 8}:
             raise ValueError("low_priority_value_bits must be 2, 4, 8, or None.")
+        if self.rotation not in {"none", "hadamard"}:
+            raise ValueError("rotation must be 'none' or 'hadamard'.")
+        if (
+            self.low_priority_value_rotation is not None
+            and self.low_priority_value_rotation not in {"none", "hadamard"}
+        ):
+            raise ValueError("low_priority_value_rotation must be 'none', 'hadamard', or None.")
+        if self.low_priority_value_rotation_min_context < 0:
+            raise ValueError("low_priority_value_rotation_min_context must be >= 0.")
         if not 0.0 <= self.outlier_protection_ratio <= 1.0:
             raise ValueError("outlier_protection_ratio must be in [0, 1].")
         if self.min_outlier_tokens < 0:
@@ -120,6 +141,7 @@ class QuantizedTensor:
     original_dtype: torch.dtype
     packed: bool
     packed_offset: int
+    rotation: str = "none"
 
     @property
     def qmin(self) -> int:
@@ -146,6 +168,8 @@ class QuantizedTensor:
             moved = moved.narrow(-1, 0, original_axis_len)
 
         out = moved.movedim(-1, self.axis).contiguous()
+        if self.rotation == "hadamard":
+            out = _hadamard_last_dim(out)
         return out.to(self.original_dtype)
 
 
@@ -660,10 +684,11 @@ def quantize_kv_layer(
 
     compressed_mask = ~retain_mask
     low_priority_mask = torch.zeros(seq_len, dtype=torch.bool, device=device)
+    low_priority_ratio = _effective_low_priority_ratio(config, seq_len)
     if (
         importance_scores is not None
         and seq_len >= config.low_priority_min_context
-        and (config.low_priority_ratio > 0.0 or config.min_low_priority_tokens > 0)
+        and (low_priority_ratio > 0.0 or config.min_low_priority_tokens > 0)
         and (
             config.low_priority_bits is not None
             or config.low_priority_key_bits is not None
@@ -676,7 +701,7 @@ def quantize_kv_layer(
         candidate_count = int(candidate_indices.numel())
         keep = min(
             candidate_count,
-            max(ceil(candidate_count * config.low_priority_ratio), config.min_low_priority_tokens),
+            max(ceil(candidate_count * low_priority_ratio), config.min_low_priority_tokens),
         )
         if keep > 0:
             bottom = torch.topk(
@@ -722,11 +747,12 @@ def quantize_kv_layer(
             replace(quant_config, bits=low_key_bits),
             axis=key_axis,
         )
-        low_priority_compressed_values = _quantize_tensor(
-            value_src,
-            replace(quant_config, bits=low_value_bits),
-            axis=value_axis,
+        low_value_config = replace(
+            quant_config,
+            bits=low_value_bits,
+            rotation=_effective_low_priority_value_rotation(config, seq_len, quant_config.rotation),
         )
+        low_priority_compressed_values = _quantize_tensor(value_src, low_value_config, axis=value_axis)
 
     layer = QuantizedKvLayer(
         compressed_keys=compressed_keys,
@@ -820,6 +846,8 @@ def attention_report(
 
 
 def _quantize_tensor(x: torch.Tensor, config: KvQuantConfig, axis: int) -> QuantizedTensor:
+    if config.rotation == "hadamard":
+        x = _hadamard_last_dim(x)
     axis = axis % x.ndim
     moved = x.detach().movedim(axis, -1).contiguous()
     axis_len = moved.shape[-1]
@@ -878,6 +906,7 @@ def _quantize_tensor(x: torch.Tensor, config: KvQuantConfig, axis: int) -> Quant
         original_dtype=x.dtype,
         packed=packed,
         packed_offset=packed_offset,
+        rotation=config.rotation,
     )
 
 
@@ -889,6 +918,42 @@ def _effective_quant_config(config: KvQuantConfig, seq_len: int) -> KvQuantConfi
     ):
         return replace(config, quantizer=config.long_context_quantizer)
     return config
+
+
+def _effective_low_priority_ratio(config: KvQuantConfig, seq_len: int) -> float:
+    if (
+        config.long_low_priority_ratio is not None
+        and seq_len >= config.long_low_priority_min_context
+    ):
+        return config.long_low_priority_ratio
+    return config.low_priority_ratio
+
+
+def _effective_low_priority_value_rotation(
+    config: KvQuantConfig,
+    seq_len: int,
+    fallback: str,
+) -> str:
+    if (
+        config.low_priority_value_rotation is not None
+        and seq_len >= config.low_priority_value_rotation_min_context
+    ):
+        return config.low_priority_value_rotation
+    return fallback
+
+
+def _hadamard_last_dim(x: torch.Tensor) -> torch.Tensor:
+    dim = x.shape[-1]
+    if dim < 1 or dim & (dim - 1):
+        raise ValueError("hadamard rotation requires a power-of-two head dimension.")
+    y = x.to(torch.float32)
+    h = 1
+    while h < dim:
+        y = y.reshape(*y.shape[:-1], dim // (2 * h), 2, h)
+        left, right = y.unbind(dim=-2)
+        y = torch.stack((left + right, left - right), dim=-2).reshape(*x.shape)
+        h *= 2
+    return (y / sqrt(dim)).to(x.dtype)
 
 
 def _full_precision_layer(keys: torch.Tensor, values: torch.Tensor, seq_dim: int) -> QuantizedKvLayer:
